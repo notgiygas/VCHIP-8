@@ -2,8 +2,6 @@
 
 A CHIP-8 emulator written entirely in x86-64 assembly (NASM syntax).
 
-**Emulator created by giygas.**
-
 ## What's actually "in assembly"
 
 Every byte of CHIP-8 emulation logic is hand-written x86-64 assembly with zero dependency on any
@@ -157,7 +155,3 @@ needs it:
 * **RNG:** a 32-bit xorshift PRNG seeded from `rdtsc`, used by `CXNN`.
 * **Icon:** the Windows build embeds `icon.ico` (generated from the
   provided logo) via a compiled `.rc` resource, linked in by `build.bat`.
-
-## License / credit
-
-All credit for the creation of this emulator goes to me (**giygas**).
