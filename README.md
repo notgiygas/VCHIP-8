@@ -97,7 +97,7 @@ The Windows build has a native Win32 menu bar attached to the window:
   - **Colors** -- pick custom foreground ("pixel on") and background
     ("pixel off") colors via the native Windows color picker
   - Sound Enabled, Debug Mode -- checkable toggles
-- **Help** -- Controls... (shows the keypad/keyboard mapping), About VCHIP8...
+- **Help** -- Controls... (shows the keypad/keyboard mapping)
 
 You can also just **drag and drop a `.ch8` file onto the window** to load
 it
