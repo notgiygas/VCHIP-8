@@ -4,21 +4,10 @@ A CHIP-8 emulator written entirely in x86-64 assembly (NASM syntax).
 
 ## What's actually "in assembly"
 
-Every byte of CHIP-8 emulation logic is hand-written x86-64 assembly with zero dependency on any
-higher-level language.
+Every byte of CHIP-8 emulation logic is x86-64 assembly with zero dependency on any
+higher-level language. 
 
-That logic lives in [`src/chip8_core.inc`](src/chip8_core.inc)
-and is identical on every platform.
-
-The two platform front-ends (`src/linux/main.asm` and `src/windows/main.asm`)
-are also 100% assembly.
-
-**SDL2** (for the window, renderer,
-keyboard events and audio) and the **C runtime** (`fopen`/`fread`/`fclose` to
-load the ROM file, and program entry/exit)
-
-No C or any other language was used to
-implement any part of the emulation itself.
+That logic lives in [`src/chip8_core.inc`](src/chip8_core.inc) and is identical on every platform.
 
 ## Project layout
 
@@ -29,12 +18,12 @@ VCHIP-8/
 ├── setup_and_build.bat      Windows: downloads the whole toolchain, then builds
 ├── icon.ico                 App icon (Windows)
 ├── vchip8.rc                Windows resource script embedding icon.ico
-├── roms/                    (put your CHIP-8 ROMs here)
+├── roms/                    (put your CHIP-8 ROMs here lol)
 └── src/
-    ├── chip8_core.inc       The emulator's core (CPU/memory/display/timers/quirks)
-    ├── debug_render.inc     Shared debug-overlay renderer (bitmap font + HUD)
-    ├── linux/main.asm       Linux front-end (SDL2, System V x86-64 ABI)
-    └── windows/main.asm     Windows front-end (SDL2 + native menu, Win64 ABI)
+    ├── chip8_core.inc       The emulator core
+    ├── debug_render.inc     Shared debug-overlay renderer
+    ├── linux/main.asm       Linux front-end
+    └── windows/main.asm     Windows front-end
 ```
 
 ## Building
@@ -75,6 +64,11 @@ a toolchain:
    `build\vchip8.exe`.
 5. `build\vchip8.exe roms\pong.ch8`
 
+> This project has been built and smoke-tested with a real toolchain
+> (NASM + mingw-w64 gcc + the SDL2 MinGW dev package for Windows; NASM +
+> gcc + libsdl2-dev on Linux)
+> Please open an issue if something misbehaves at runtime on real Windows.
+
 ## Controls
 
 The original COSMAC VIP CHIP-8 keypad is mapped onto the left side of a
@@ -82,13 +76,13 @@ QWERTY keyboard:
 
 ```
 CHIP-8 keypad          Your keyboard
- 1 2 3 C                 1 2 3 4
+ 1 2 3 C                  1 2 3 4
  4 5 6 D        <--       Q W E R
  7 8 9 E                  A S D F
  A 0 B F                  Z X C V
 ```
 
-`Esc` quits.
+`Esc` kills the emulator.
 
 ### Windows: menu bar
 
@@ -99,9 +93,14 @@ The Windows build has a native Win32 menu bar attached to the window:
   - **Video** -- 1x / 2x / 3x window scale
   - **Steps/Ticks per frame** -- 6 / 12 (default) / 18 / 24 instructions
     executed per rendered (~60fps) frame, i.e. roughly 360Hz-1440Hz
-  - **Quirks** -- three checkable behaviors some ROMs expect (see below)
+  - **Quirks** -- three checkable behaviors some ROMs expect
+  - **Colors** -- pick custom foreground ("pixel on") and background
+    ("pixel off") colors via the native Windows color picker
   - Sound Enabled, Debug Mode -- checkable toggles
-- **Help** -- About VCHIP8...
+- **Help** -- Controls... (shows the keypad/keyboard mapping), About VCHIP8...
+
+You can also just **drag and drop a `.ch8` file onto the window** to load
+it
 
 ### Linux: keyboard shortcuts
 
@@ -112,19 +111,6 @@ The Windows build has a native Win32 menu bar attached to the window:
 | F3  | Toggle "BNNN uses VX" quirk |
 | F4  | Toggle "FX55/FX65 increments I" quirk |
 | Esc | Quit |
-
-Video scale, steps/ticks, sound toggle, and the Open ROM dialog are
-Windows-only for now (loading a different ROM on Linux means relaunching
-with a new command-line argument).
-
-## Debug mode
-
-Toggling Debug Mode (Windows: Options menu; Linux: F1) overlays live CPU
-state on top of the display in red text: `PC`, `I`, the delay/sound timers,
-the last fetched opcode, all 16 `V` registers, and the call stack. The
-overlay text is rendered from a small 5x7 bitmap font drawn with the same
-rectangle-fill primitive used for the CHIP-8 display itself -- no font
-library involved.
 
 ## Quirks
 
@@ -153,5 +139,7 @@ needs it:
 * **Audio:** a simple 440Hz square wave is queued to SDL2's audio device
   for as long as the sound timer is non-zero and sound isn't muted.
 * **RNG:** a 32-bit xorshift PRNG seeded from `rdtsc`, used by `CXNN`.
-* **Icon:** the Windows build embeds `icon.ico` (generated from the
-  provided logo) via a compiled `.rc` resource, linked in by `build.bat`.
+
+## License / credit
+
+All credit for the creation of this emulator goes to **giygas**.
