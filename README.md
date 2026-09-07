@@ -90,6 +90,8 @@ CHIP-8 keypad          Your keyboard
 
 ### Windows: menu bar
 
+<img width="1294" height="512" alt="image" src="https://github.com/user-attachments/assets/df9293df-df49-4e7e-bb90-aad76dc04b3e" />
+
 The Windows build has a native Win32 menu bar attached to the window:
 
 - **File** -- Open ROM... (native file picker), Exit
