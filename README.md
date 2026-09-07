@@ -9,6 +9,10 @@ higher-level language.
 
 That logic lives in [`src/chip8_core.inc`](src/chip8_core.inc) and is identical on every platform.
 
+
+<img width="800" height="457" alt="image" src="https://github.com/user-attachments/assets/209f6574-20a0-4556-b60a-fca256cb3ea4" />
+
+
 ## Project layout
 
 ```
