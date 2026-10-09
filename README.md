@@ -7,6 +7,8 @@ handling and debug overlay are all assembly; the only external dependency is SDL
 The interpreter itself is in `src/chip8_core.inc` and is shared by both the Windows and
 Linux front-ends.
 
+![VCHIP-8 screenshot](https://github.com/user-attachments/assets/209f6574-20a0-4556-b60a-fca256cb3ea4)
+
 ## Layout
 
 ```
@@ -72,6 +74,8 @@ A 0 B F       Z X C V
 `Esc` quits.
 
 ### Windows
+
+![Windows menu bar](https://github.com/user-attachments/assets/df9293df-df49-4e7e-bb90-aad76dc04b3e)
 
 The window has a menu bar:
 
