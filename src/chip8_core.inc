@@ -1,23 +1,35 @@
+; entry points:
+;   chip8_init        reset machine state, load font, seed RNG
+;   chip8_load_rom    rdi = buffer, esi = size in bytes
+;   chip8_cycle       execute one instruction
+;   chip8_timer_tick  call at 60Hz
+;   chip8_key_down    dil = key 0-F
+;   chip8_key_up      dil = key 0-F
+
+; ---------------------------------------------------------------------------
+; data
+; ---------------------------------------------------------------------------
+
 section .data
 
 align 16
 chip8_fontset:
-    db 0xF0, 0x90, 0x90, 0x90, 0xF0   ; 0
-    db 0x20, 0x60, 0x20, 0x20, 0x70   ; 1
-    db 0xF0, 0x10, 0xF0, 0x80, 0xF0   ; 2
-    db 0xF0, 0x10, 0xF0, 0x10, 0xF0   ; 3
-    db 0x90, 0x90, 0xF0, 0x10, 0x10   ; 4
-    db 0xF0, 0x80, 0xF0, 0x10, 0xF0   ; 5
-    db 0xF0, 0x80, 0xF0, 0x90, 0xF0   ; 6
-    db 0xF0, 0x10, 0x20, 0x40, 0x40   ; 7
-    db 0xF0, 0x90, 0xF0, 0x90, 0xF0   ; 8
-    db 0xF0, 0x90, 0xF0, 0x10, 0xF0   ; 9
-    db 0xF0, 0x90, 0xF0, 0x90, 0x90   ; A
-    db 0xE0, 0x90, 0xE0, 0x90, 0xE0   ; B
-    db 0xF0, 0x80, 0x80, 0x80, 0xF0   ; C
-    db 0xE0, 0x90, 0x90, 0x90, 0xE0   ; D
-    db 0xF0, 0x80, 0xF0, 0x80, 0xF0   ; E
-    db 0xF0, 0x80, 0xF0, 0x80, 0x80   ; F
+    db 0xF0, 0x90, 0x90, 0x90, 0xF0     ; 0
+    db 0x20, 0x60, 0x20, 0x20, 0x70     ; 1
+    db 0xF0, 0x10, 0xF0, 0x80, 0xF0     ; 2
+    db 0xF0, 0x10, 0xF0, 0x10, 0xF0     ; 3
+    db 0x90, 0x90, 0xF0, 0x10, 0x10     ; 4
+    db 0xF0, 0x80, 0xF0, 0x10, 0xF0     ; 5
+    db 0xF0, 0x80, 0xF0, 0x90, 0xF0     ; 6
+    db 0xF0, 0x10, 0x20, 0x40, 0x40     ; 7
+    db 0xF0, 0x90, 0xF0, 0x90, 0xF0     ; 8
+    db 0xF0, 0x90, 0xF0, 0x10, 0xF0     ; 9
+    db 0xF0, 0x90, 0xF0, 0x90, 0x90     ; A
+    db 0xE0, 0x90, 0xE0, 0x90, 0xE0     ; B
+    db 0xF0, 0x80, 0x80, 0x80, 0xF0     ; C
+    db 0xE0, 0x90, 0x90, 0x90, 0xE0     ; D
+    db 0xF0, 0x80, 0xF0, 0x80, 0xF0     ; E
+    db 0xF0, 0x80, 0xF0, 0x80, 0x80     ; F
 
 %define CHIP8_FONT_BASE 0x50
 %define CHIP8_ROM_BASE  0x200
@@ -25,689 +37,601 @@ chip8_fontset:
 section .bss
 
 align 16
-chip8_mem:          resb 4096   ; 4K addressable RAM
-chip8_V:             resb 16    ; V0-VF general purpose registers
-chip8_I:             resd 1     ; index register (12-bit value used)
-chip8_pc:            resd 1     ; program counter
-chip8_sp:            resd 1     ; stack pointer
-chip8_stack:         resd 16    ; call stack (16 levels)
-chip8_delay:         resd 1     ; delay timer (60Hz)
-chip8_sound:         resd 1     ; sound timer (60Hz)
-chip8_display:       resb 2048  ; 64x32 monochrome framebuffer, 1 byte/pixel
-chip8_keys:          resb 16    ; 16-key hex keypad state
-chip8_draw_flag:     resb 1     ; set to 1 whenever the framebuffer changes
-chip8_rng_state:     resd 1     ; xorshift32 PRNG state
-chip8_last_opcode:   resd 1     ; most recently fetched opcode (debug overlay)
+chip8_mem:              resb 4096   ; 4K RAM
+chip8_V:                resb 16     ; V0-VF
+chip8_I:                resd 1      ; index register (12 bits used)
+chip8_pc:               resd 1
+chip8_sp:               resd 1
+chip8_stack:            resd 16
+chip8_delay:            resd 1      ; delay timer, counts down at 60Hz
+chip8_sound:            resd 1      ; sound timer, counts down at 60Hz
+chip8_display:          resb 2048   ; 64x32, one byte per pixel (0 or 1)
+chip8_keys:             resb 16     ; 1 = held
+chip8_draw_flag:        resb 1      ; set whenever the framebuffer changes
+chip8_rng_state:        resd 1
+chip8_last_opcode:      resd 1      ; for the debug overlay
 
-; --- configurable quirks (0 = default behavior, 1 = alternate) ---
-quirk_shift_vy:          resd 1   ; 8XY6/8XYE shift VY into VX instead of VX in place
-quirk_bnnn_vx:            resd 1   ; BNNN jumps to NNN+VX (X = top nibble) instead of NNN+V0
-quirk_fx55_increment_i:   resd 1   ; FX55/FX65 leave I += X+1 instead of unchanged
+; Quirks. All default to 0 (modern behaviour), 1 selects the COSMAC VIP one.
+quirk_shift_vy:         resd 1      ; 8XY6/8XYE shift VY into VX
+quirk_bnnn_vx:          resd 1      ; BNNN jumps to NNN + VX instead of NNN + V0
+quirk_fx55_increment_i: resd 1      ; FX55/FX65 leave I += X + 1
+
+; ---------------------------------------------------------------------------
+; code
+; ---------------------------------------------------------------------------
 
 section .text
 
+; zero `count` bytes at `label`. Needs al = 0; clobbers rdi, rcx.
+%macro zero_bytes 2
+    lea     rdi, [rel %1]
+    mov     ecx, %2
+    rep stosb
+%endmacro
+
 chip8_init:
-    push rcx
-    push rdx
-    push r8
+    push    rdi
+    push    rsi
+    push    rcx
+    push    rdx
 
-    xor ecx, ecx
-    lea rdx, [rel chip8_mem]
-.clearmem:
-    cmp ecx, 4096
-    jae .clearmem_done
-    mov byte [rdx + rcx], 0
-    inc ecx
-    jmp .clearmem
-.clearmem_done:
+    xor     eax, eax
+    zero_bytes chip8_mem,     4096
+    zero_bytes chip8_V,       16
+    zero_bytes chip8_display, 2048
+    zero_bytes chip8_keys,    16
 
-    xor ecx, ecx
-    lea rdx, [rel chip8_V]
-.clearv:
-    cmp ecx, 16
-    jae .clearv_done
-    mov byte [rdx + rcx], 0
-    inc ecx
-    jmp .clearv
-.clearv_done:
+    mov     dword [chip8_I], 0
+    mov     dword [chip8_pc], CHIP8_ROM_BASE
+    mov     dword [chip8_sp], 0
+    mov     dword [chip8_delay], 0
+    mov     dword [chip8_sound], 0
+    mov     byte  [chip8_draw_flag], 0
 
-    xor ecx, ecx
-    lea rdx, [rel chip8_display]
-.cleardisp:
-    cmp ecx, 2048
-    jae .cleardisp_done
-    mov byte [rdx + rcx], 0
-    inc ecx
-    jmp .cleardisp
-.cleardisp_done:
-
-    xor ecx, ecx
-    lea rdx, [rel chip8_keys]
-.clearkeys:
-    cmp ecx, 16
-    jae .clearkeys_done
-    mov byte [rdx + rcx], 0
-    inc ecx
-    jmp .clearkeys
-.clearkeys_done:
-
-    mov dword [chip8_I], 0
-    mov dword [chip8_pc], CHIP8_ROM_BASE
-    mov dword [chip8_sp], 0
-    mov dword [chip8_delay], 0
-    mov dword [chip8_sound], 0
-    mov byte  [chip8_draw_flag], 0
-
-    xor ecx, ecx
-    lea rdx, [rel chip8_fontset]
-    lea r8, [rel chip8_mem]
-.copyfont:
-    cmp ecx, 80
-    jae .copyfont_done
-    mov al, [rdx + rcx]
-    mov [r8 + CHIP8_FONT_BASE + rcx], al
-    inc ecx
-    jmp .copyfont
-.copyfont_done:
+    lea     rsi, [rel chip8_fontset]
+    lea     rdi, [rel chip8_mem + CHIP8_FONT_BASE]
+    mov     ecx, 80
+    rep movsb
 
     rdtsc
-    or eax, 1                      ; PRNG seed must never be zero
-    mov [chip8_rng_state], eax
+    or      eax, 1                      ; xorshift gets stuck at 0
+    mov     [chip8_rng_state], eax
 
-    pop r8
-    pop rdx
-    pop rcx
+    pop     rdx
+    pop     rcx
+    pop     rsi
+    pop     rdi
     ret
 
+
+; rdi = source buffer, esi = size. Anything past the end of RAM is dropped.
 chip8_load_rom:
-    push rcx
-    push rdx
-    push rdi
-    push rsi
-    push r8
+    push    rcx
+    push    rsi
+    push    rdi
 
-    mov ecx, esi
-    cmp ecx, 4096 - CHIP8_ROM_BASE
-    jbe .sizeok
-    mov ecx, 4096 - CHIP8_ROM_BASE
-.sizeok:
-    xor edx, edx
-    lea r8, [rel chip8_mem]
-.copyloop:
-    cmp edx, ecx
-    jae .copydone
-    mov al, [rdi + rdx]
-    mov [r8 + CHIP8_ROM_BASE + rdx], al
-    inc edx
-    jmp .copyloop
-.copydone:
+    mov     ecx, esi
+    mov     eax, 4096 - CHIP8_ROM_BASE
+    cmp     ecx, eax
+    cmova   ecx, eax
 
-    pop r8
-    pop rsi
-    pop rdi
-    pop rdx
-    pop rcx
+    mov     rsi, rdi
+    lea     rdi, [rel chip8_mem + CHIP8_ROM_BASE]
+    rep movsb
+
+    pop     rdi
+    pop     rsi
+    pop     rcx
     ret
 
+
+; xorshift32 (13, 17, 5). Returns the new value in eax.
 chip8_rand:
-    mov eax, [chip8_rng_state]
-    mov edx, eax
-    shl edx, 13
-    xor eax, edx
-    mov edx, eax
-    shr edx, 17
-    xor eax, edx
-    mov edx, eax
-    shl edx, 5
-    xor eax, edx
-    mov [chip8_rng_state], eax
+    mov     eax, [chip8_rng_state]
+    mov     edx, eax
+    shl     edx, 13
+    xor     eax, edx
+    mov     edx, eax
+    shr     edx, 17
+    xor     eax, edx
+    mov     edx, eax
+    shl     edx, 5
+    xor     eax, edx
+    mov     [chip8_rng_state], eax
     ret
+
 
 chip8_timer_tick:
-    mov eax, [chip8_delay]
-    test eax, eax
-    jz .skip_delay
-    dec eax
-    mov [chip8_delay], eax
-.skip_delay:
-    mov eax, [chip8_sound]
-    test eax, eax
-    jz .skip_sound
-    dec eax
-    mov [chip8_sound], eax
-.skip_sound:
+    cmp     dword [chip8_delay], 0
+    je      .sound
+    dec     dword [chip8_delay]
+.sound:
+    cmp     dword [chip8_sound], 0
+    je      .done
+    dec     dword [chip8_sound]
+.done:
     ret
 
+
 chip8_key_down:
-    movzx eax, dil
-    lea rdx, [rel chip8_keys]
-    mov byte [rdx + rax], 1
+    movzx   eax, dil
+    and     eax, 0xF
+    lea     rdx, [rel chip8_keys]
+    mov     byte [rdx + rax], 1
     ret
 
 chip8_key_up:
-    movzx eax, dil
-    lea rdx, [rel chip8_keys]
-    mov byte [rdx + rax], 0
+    movzx   eax, dil
+    and     eax, 0xF
+    lea     rdx, [rel chip8_keys]
+    mov     byte [rdx + rax], 0
     ret
 
-; chip8_cycle - fetch, decode, execute exactly one instruction.
+
+; ---------------------------------------------------------------------------
+; chip8_cycle: fetch, decode and execute one instruction.
 ;
-; Register map used throughout this function:
-;   ecx  = raw 16-bit opcode
-;   r10d = nibble 1 (bits 15-12)   -- top-level dispatch
-;   r11d = NNN      (bits 11-0)
-;   ebx  = X        (bits 11-8)
-;   ebp  = Y        (bits 7-4)
-;   r12d = N        (bits 3-0)
-;   r13d = NN       (bits 7-0)
+; decoded fields live in registers for the whole function:
+;
+;   ecx   full opcode            r11d  NNN  (low 12 bits)
+;   r10d  top nibble             r12d  N    (low nibble)
+;   rbx   X  (bits 11-8)         r13d  NN   (low byte)
+;   rbp   Y  (bits 7-4)
+;
+;   rdi   -> chip8_V             rsi   -> chip8_mem
+; ---------------------------------------------------------------------------
+
+%define V       rdi
+%define RAM     rsi
+%define X       rbx
+%define Y       rbp
+%define N       r12d
+%define N64     r12
+%define NN      r13d
+%define NN8     r13b
+%define NNN     r11d
+%define VF      15
 
 chip8_cycle:
-    push rbx
-    push rbp
-    push rdi
-    push rsi
-    push r12
-    push r13
-    push r14
-    push r15
+    push    rbx
+    push    rbp
+    push    rdi
+    push    rsi
+    push    r12
+    push    r13
+    push    r14
+    push    r15
 
-    lea rdi, [rel chip8_V]
-    lea rsi, [rel chip8_mem]
+    lea     V,   [rel chip8_V]
+    lea     RAM, [rel chip8_mem]
 
-    mov eax, [chip8_pc]
-    movzx ecx, byte [rsi + rax]
-    movzx edx, byte [rsi + rax + 1]
-    shl ecx, 8
-    or ecx, edx
-    add dword [chip8_pc], 2
-    mov [chip8_last_opcode], ecx
+    ; fetch (opcodes are big-endian in memory)
+    mov     eax, [chip8_pc]
+    movzx   ecx, word [RAM + rax]
+    rol     cx, 8
+    add     dword [chip8_pc], 2
+    mov     [chip8_last_opcode], ecx
 
-    mov r10d, ecx
-    shr r10d, 12
+    ; decode
+    mov     r10d, ecx
+    shr     r10d, 12
+    mov     NNN, ecx
+    and     NNN, 0x0FFF
+    mov     ebx, ecx
+    shr     ebx, 8
+    and     ebx, 0xF
+    mov     ebp, ecx
+    shr     ebp, 4
+    and     ebp, 0xF
+    mov     N, ecx
+    and     N, 0xF
+    movzx   NN, cl
 
-    mov r11d, ecx
-    and r11d, 0x0FFF
+    ; dispatch on the top nibble
+    lea     rdx, [rel chip8_op_table]
+    movsxd  rax, dword [rdx + r10*4]
+    add     rax, rdx
+    jmp     rax
 
-    mov ebx, ecx
-    shr ebx, 8
-    and ebx, 0xF
-
-    mov ebp, ecx
-    shr ebp, 4
-    and ebp, 0xF
-
-    mov r12d, ecx
-    and r12d, 0xF
-
-    mov r13d, ecx
-    and r13d, 0xFF
-
-    cmp r10d, 0x0
-    je .op_0
-    cmp r10d, 0x1
-    je .op_1
-    cmp r10d, 0x2
-    je .op_2
-    cmp r10d, 0x3
-    je .op_3
-    cmp r10d, 0x4
-    je .op_4
-    cmp r10d, 0x5
-    je .op_5
-    cmp r10d, 0x6
-    je .op_6
-    cmp r10d, 0x7
-    je .op_7
-    cmp r10d, 0x8
-    je .op_8
-    cmp r10d, 0x9
-    je .op_9
-    cmp r10d, 0xA
-    je .op_A
-    cmp r10d, 0xB
-    je .op_B
-    cmp r10d, 0xC
-    je .op_C
-    cmp r10d, 0xD
-    je .op_D
-    cmp r10d, 0xE
-    je .op_E
-    cmp r10d, 0xF
-    je .op_F
-    jmp .cycle_done
-
-; ---- 0x0NNN / 00E0 / 00EE ----
+; --- 0NNN: 00E0 clear, 00EE return ------------------------------------------
 .op_0:
-    cmp ecx, 0x00E0
-    je .op_00E0
-    cmp ecx, 0x00EE
-    je .op_00EE
-    jmp .cycle_done
+    cmp     ecx, 0x00E0
+    je      .op_00E0
+    cmp     ecx, 0x00EE
+    je      .op_00EE
+    jmp     .cycle_done
+
 .op_00E0:
-    lea rdx, [rel chip8_display]
-    xor eax, eax
-.clr_loop:
-    cmp eax, 2048
-    jae .clr_done
-    mov byte [rdx + rax], 0
-    inc eax
-    jmp .clr_loop
-.clr_done:
-    mov byte [chip8_draw_flag], 1
-    jmp .cycle_done
+    lea     rdx, [rel chip8_display]
+    mov     ecx, 2048 / 8
+.clear:
+    mov     qword [rdx + rcx*8 - 8], 0
+    dec     ecx
+    jnz     .clear
+    mov     byte [chip8_draw_flag], 1
+    jmp     .cycle_done
+
 .op_00EE:
-    mov eax, [chip8_sp]
-    dec eax
-    mov [chip8_sp], eax
-    lea rcx, [rel chip8_stack]
-    mov edx, [rcx + rax*4]
-    mov [chip8_pc], edx
-    jmp .cycle_done
+    mov     eax, [chip8_sp]
+    dec     eax
+    mov     [chip8_sp], eax
+    lea     rdx, [rel chip8_stack]
+    mov     eax, [rdx + rax*4]
+    mov     [chip8_pc], eax
+    jmp     .cycle_done
 
-; 1NNN: jump
+; --- 1NNN: jump -------------------------------------------------------------
 .op_1:
-    mov [chip8_pc], r11d
-    jmp .cycle_done
+    mov     [chip8_pc], NNN
+    jmp     .cycle_done
 
-; 2NNN: call
+; --- 2NNN: call -------------------------------------------------------------
 .op_2:
-    mov eax, [chip8_sp]
-    mov edx, [chip8_pc]
-    lea rcx, [rel chip8_stack]
-    mov [rcx + rax*4], edx
-    inc eax
-    mov [chip8_sp], eax
-    mov [chip8_pc], r11d
-    jmp .cycle_done
+    mov     eax, [chip8_sp]
+    lea     rdx, [rel chip8_stack]
+    mov     r8d, [chip8_pc]
+    mov     [rdx + rax*4], r8d
+    inc     dword [chip8_sp]
+    mov     [chip8_pc], NNN
+    jmp     .cycle_done
 
-; 3XNN: skip if VX == NN
-.op_3:
-    movzx eax, byte [rdi + rbx]
-    cmp eax, r13d
-    jne .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
+; --- 3XNN / 4XNN / 5XY0 / 9XY0: conditional skips ---------------------------
+.op_3:                                  ; skip if VX == NN
+    cmp     byte [V + X], NN8
+    je      .skip_next
+    jmp     .cycle_done
 
-; 4XNN: skip if VX != NN
-.op_4:
-    movzx eax, byte [rdi + rbx]
-    cmp eax, r13d
-    je .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
+.op_4:                                  ; skip if VX != NN
+    cmp     byte [V + X], NN8
+    jne     .skip_next
+    jmp     .cycle_done
 
-; 5XY0: skip if VX == VY
-.op_5:
-    test r12d, r12d
-    jnz .cycle_done
-    movzx eax, byte [rdi + rbx]
-    movzx edx, byte [rdi + rbp]
-    cmp eax, edx
-    jne .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
+.op_5:                                  ; skip if VX == VY
+    test    N, N
+    jnz     .cycle_done
+    mov     al, [V + X]
+    cmp     al, [V + Y]
+    je      .skip_next
+    jmp     .cycle_done
 
-; 6XNN: VX = NN
+.op_9:                                  ; skip if VX != VY
+    test    N, N
+    jnz     .cycle_done
+    mov     al, [V + X]
+    cmp     al, [V + Y]
+    jne     .skip_next
+    jmp     .cycle_done
+
+; --- 6XNN / 7XNN ------------------------------------------------------------
 .op_6:
-    mov [rdi + rbx], r13b
-    jmp .cycle_done
+    mov     [V + X], NN8
+    jmp     .cycle_done
 
-; 7XNN: VX += NN (no carry flag)
-.op_7:
-    add [rdi + rbx], r13b
-    jmp .cycle_done
+.op_7:                                  ; no carry flag on this one
+    add     [V + X], NN8
+    jmp     .cycle_done
 
-; 8XY?: ALU group
+; --- 8XYN: ALU --------------------------------------------------------------
 .op_8:
-    cmp r12d, 0
-    je .op_8xy0
-    cmp r12d, 1
-    je .op_8xy1
-    cmp r12d, 2
-    je .op_8xy2
-    cmp r12d, 3
-    je .op_8xy3
-    cmp r12d, 4
-    je .op_8xy4
-    cmp r12d, 5
-    je .op_8xy5
-    cmp r12d, 6
-    je .op_8xy6
-    cmp r12d, 7
-    je .op_8xy7
-    cmp r12d, 0xE
-    je .op_8xyE
-    jmp .cycle_done
-.op_8xy0:
-    mov al, [rdi + rbp]
-    mov [rdi + rbx], al
-    jmp .cycle_done
-.op_8xy1:
-    mov al, [rdi + rbp]
-    or [rdi + rbx], al
-    jmp .cycle_done
-.op_8xy2:
-    mov al, [rdi + rbp]
-    and [rdi + rbx], al
-    jmp .cycle_done
-.op_8xy3:
-    mov al, [rdi + rbp]
-    xor [rdi + rbx], al
-    jmp .cycle_done
-.op_8xy4:
-    movzx eax, byte [rdi + rbx]
-    movzx edx, byte [rdi + rbp]
-    add eax, edx
-    mov r9d, eax
-    shr r9d, 8
-    and r9d, 1
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xy5:
-    movzx eax, byte [rdi + rbx]
-    movzx edx, byte [rdi + rbp]
-    mov r9d, eax
-    cmp r9d, edx
-    setae r9b
-    sub al, dl
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xy6:
-    cmp dword [quirk_shift_vy], 0
-    jne .op_8xy6_vy
-    movzx eax, byte [rdi + rbx]
-    mov r9b, al
-    and r9b, 1
-    shr al, 1
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xy6_vy:
-    movzx eax, byte [rdi + rbp]
-    mov r9b, al
-    and r9b, 1
-    shr al, 1
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xy7:
-    movzx eax, byte [rdi + rbx]
-    movzx edx, byte [rdi + rbp]
-    mov r9d, edx
-    cmp r9d, eax
-    setae r9b
-    mov al, dl
-    sub al, [rdi + rbx]
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xyE:
-    cmp dword [quirk_shift_vy], 0
-    jne .op_8xyE_vy
-    movzx eax, byte [rdi + rbx]
-    mov r9b, al
-    shr r9b, 7
-    and r9b, 1
-    shl al, 1
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
-.op_8xyE_vy:
-    movzx eax, byte [rdi + rbp]
-    mov r9b, al
-    shr r9b, 7
-    and r9b, 1
-    shl al, 1
-    mov [rdi + rbx], al
-    mov [rdi + 15], r9b
-    jmp .cycle_done
+    lea     rdx, [rel chip8_alu_table]
+    movsxd  rax, dword [rdx + N64*4]
+    add     rax, rdx
+    jmp     rax
 
-; 9XY0: skip if VX != VY
-.op_9:
-    test r12d, r12d
-    jnz .cycle_done
-    movzx eax, byte [rdi + rbx]
-    movzx edx, byte [rdi + rbp]
-    cmp eax, edx
-    je .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
+.op_8xy0:                               ; VX = VY
+    mov     al, [V + Y]
+    mov     [V + X], al
+    jmp     .cycle_done
 
-; ANNN: I = NNN
+.op_8xy1:                               ; VX |= VY
+    mov     al, [V + Y]
+    or      [V + X], al
+    jmp     .cycle_done
+
+.op_8xy2:                               ; VX &= VY
+    mov     al, [V + Y]
+    and     [V + X], al
+    jmp     .cycle_done
+
+.op_8xy3:                               ; VX ^= VY
+    mov     al, [V + Y]
+    xor     [V + X], al
+    jmp     .cycle_done
+
+.op_8xy4:                               ; VX += VY, VF = carry
+    mov     al, [V + X]
+    add     al, [V + Y]
+    setc    dl
+    mov     [V + X], al
+    mov     [V + VF], dl                ; written last so VF wins if X == F
+    jmp     .cycle_done
+
+.op_8xy5:                               ; VX -= VY, VF = not borrow
+    mov     al, [V + X]
+    sub     al, [V + Y]
+    setae   dl
+    mov     [V + X], al
+    mov     [V + VF], dl
+    jmp     .cycle_done
+
+.op_8xy7:                               ; VX = VY - VX, VF = not borrow
+    mov     al, [V + Y]
+    sub     al, [V + X]
+    setae   dl
+    mov     [V + X], al
+    mov     [V + VF], dl
+    jmp     .cycle_done
+
+.op_8xy6:                               ; shift right, VF = bit shifted out
+    mov     rdx, X
+    cmp     dword [quirk_shift_vy], 0
+    cmovne  rdx, Y                      ; quirk: shift VY instead
+    mov     al, [V + rdx]
+    shr     al, 1
+    setc    r9b
+    mov     [V + X], al
+    mov     [V + VF], r9b
+    jmp     .cycle_done
+
+.op_8xyE:                               ; shift left, VF = bit shifted out
+    mov     rdx, X
+    cmp     dword [quirk_shift_vy], 0
+    cmovne  rdx, Y
+    mov     al, [V + rdx]
+    shl     al, 1
+    setc    r9b
+    mov     [V + X], al
+    mov     [V + VF], r9b
+    jmp     .cycle_done
+
+; --- ANNN / BNNN / CXNN -----------------------------------------------------
 .op_A:
-    mov [chip8_I], r11d
-    jmp .cycle_done
+    mov     [chip8_I], NNN
+    jmp     .cycle_done
 
-; BNNN: jump V0+NNN
-.op_B:
-    cmp dword [quirk_bnnn_vx], 0
-    jne .op_B_vx
-    movzx eax, byte [rdi + 0]
-    add eax, r11d
-    mov [chip8_pc], eax
-    jmp .cycle_done
-.op_B_vx:
-    movzx eax, byte [rdi + rbx]
-    add eax, r11d
-    mov [chip8_pc], eax
-    jmp .cycle_done
+.op_B:                                  ; jump to NNN + V0 (or + VX with the quirk)
+    xor     edx, edx
+    cmp     dword [quirk_bnnn_vx], 0
+    cmovne  rdx, X
+    movzx   eax, byte [V + rdx]
+    add     eax, NNN
+    mov     [chip8_pc], eax
+    jmp     .cycle_done
 
-; CXNN: VX = rand & NN
 .op_C:
-    call chip8_rand
-    and eax, r13d
-    mov [rdi + rbx], al
-    jmp .cycle_done
+    call    chip8_rand
+    and     eax, NN
+    mov     [V + X], al
+    jmp     .cycle_done
 
-; DXYN: draw sprite
 .op_D:
-    movzx eax, byte [rdi + rbx]
-    and eax, 63
-    mov r8d, eax                    ; x0
-    movzx eax, byte [rdi + rbp]
-    and eax, 31
-    mov r9d, eax                    ; y0
-    mov byte [rdi + 15], 0
-    lea rbx, [rel chip8_display]
-    xor r14d, r14d                  ; row
-.d_rowloop:
-    cmp r14d, r12d
-    jae .d_done
-    mov eax, r9d
-    add eax, r14d                   ; yy
-    cmp eax, 32
-    jae .d_done
-    mov r15d, eax                   ; yy
-    mov eax, [chip8_I]
-    add eax, r14d
-    movzx edx, byte [rsi + rax]     ; sprite byte (rsi = chip8_mem)
-    xor ecx, ecx                    ; col
-.d_colloop:
-    cmp ecx, 8
-    jae .d_rownext
-    mov eax, r8d
-    add eax, ecx                    ; xx
-    cmp eax, 64
-    jae .d_rownext
-    mov r10d, 7
-    sub r10d, ecx
-    mov r11d, edx
-    push rcx
-    mov ecx, r10d
-    shr r11d, cl
-    pop rcx
-    and r11d, 1
-    test r11d, r11d
-    jz .d_nextcol
-    mov r13d, r15d
-    imul r13d, 64
-    add r13d, eax
-    cmp byte [rbx + r13], 1
-    jne .d_setpix
-    mov byte [rdi + 15], 1
-.d_setpix:
-    xor byte [rbx + r13], 1
-.d_nextcol:
-    inc ecx
-    jmp .d_colloop
-.d_rownext:
-    inc r14d
-    jmp .d_rowloop
-.d_done:
-    mov byte [chip8_draw_flag], 1
-    jmp .cycle_done
+    movzx   r8d, byte [V + X]
+    and     r8d, 63                     ; x origin
+    movzx   r9d, byte [V + Y]
+    and     r9d, 31                     ; y origin
+    mov     byte [V + VF], 0
+    lea     r10, [rel chip8_display]
+    xor     r14d, r14d                  ; current row
 
-; EX9E / EXA1: key skip
+.draw_row:
+    cmp     r14d, N
+    jae     .draw_done
+    lea     eax, [r9 + r14]             ; screen y
+    cmp     eax, 32
+    jae     .draw_done
+    shl     eax, 6                      ; * 64
+    lea     r15, [r10 + rax]            ; this row in the framebuffer
+
+    mov     eax, [chip8_I]
+    add     eax, r14d
+    movzx   edx, byte [RAM + rax]       ; sprite byte for this row
+
+    mov     ecx, r8d                    ; screen x
+    mov     r13d, 8                     ; pixels left in this byte
+.draw_col:
+    cmp     ecx, 64
+    jae     .draw_next_row
+    shl     dl, 1                       ; next sprite bit -> carry
+    jnc     .draw_skip
+    cmp     byte [r15 + rcx], 0
+    je      .draw_toggle
+    mov     byte [V + VF], 1            ; erasing a lit pixel
+.draw_toggle:
+    xor     byte [r15 + rcx], 1
+.draw_skip:
+    inc     ecx
+    dec     r13d
+    jnz     .draw_col
+
+.draw_next_row:
+    inc     r14d
+    jmp     .draw_row
+
+.draw_done:
+    mov     byte [chip8_draw_flag], 1
+    jmp     .cycle_done
+
+; --- EX9E / EXA1: skip on key state -----------------------------------------
 .op_E:
-    cmp r13d, 0x9E
-    je .op_Ex9E
-    cmp r13d, 0xA1
-    je .op_ExA1
-    jmp .cycle_done
-.op_Ex9E:
-    movzx eax, byte [rdi + rbx]
-    lea rdx, [rel chip8_keys]
-    cmp byte [rdx + rax], 1
-    jne .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
-.op_ExA1:
-    movzx eax, byte [rdi + rbx]
-    lea rdx, [rel chip8_keys]
-    cmp byte [rdx + rax], 1
-    je .cycle_done
-    add dword [chip8_pc], 2
-    jmp .cycle_done
+    cmp     NN, 0x9E
+    je      .op_Ex9E
+    cmp     NN, 0xA1
+    je      .op_ExA1
+    jmp     .cycle_done
 
-; FX??: misc group
+.op_Ex9E:                               ; skip if key VX is down
+    movzx   eax, byte [V + X]
+    and     eax, 0xF
+    lea     rdx, [rel chip8_keys]
+    cmp     byte [rdx + rax], 0
+    jne     .skip_next
+    jmp     .cycle_done
+
+.op_ExA1:                               ; skip if key VX is up
+    movzx   eax, byte [V + X]
+    and     eax, 0xF
+    lea     rdx, [rel chip8_keys]
+    cmp     byte [rdx + rax], 0
+    je      .skip_next
+    jmp     .cycle_done
+
+; --- FXNN -------------------------------------------------------------------
 .op_F:
-    cmp r13d, 0x07
-    je .op_Fx07
-    cmp r13d, 0x0A
-    je .op_Fx0A
-    cmp r13d, 0x15
-    je .op_Fx15
-    cmp r13d, 0x18
-    je .op_Fx18
-    cmp r13d, 0x1E
-    je .op_Fx1E
-    cmp r13d, 0x29
-    je .op_Fx29
-    cmp r13d, 0x33
-    je .op_Fx33
-    cmp r13d, 0x55
-    je .op_Fx55
-    cmp r13d, 0x65
-    je .op_Fx65
-    jmp .cycle_done
-.op_Fx07:
-    mov eax, [chip8_delay]
-    mov [rdi + rbx], al
-    jmp .cycle_done
-.op_Fx0A:
-    xor eax, eax
-    lea rdx, [rel chip8_keys]
-.fx0a_scan:
-    cmp eax, 16
-    jae .fx0a_none
-    cmp byte [rdx + rax], 1
-    je .fx0a_found
-    inc eax
-    jmp .fx0a_scan
-.fx0a_found:
-    mov [rdi + rbx], al
-    jmp .cycle_done
-.fx0a_none:
-    sub dword [chip8_pc], 2         ; re-execute this instruction next cycle
-    jmp .cycle_done
-.op_Fx15:
-    movzx eax, byte [rdi + rbx]
-    mov [chip8_delay], eax
-    jmp .cycle_done
-.op_Fx18:
-    movzx eax, byte [rdi + rbx]
-    mov [chip8_sound], eax
-    jmp .cycle_done
-.op_Fx1E:
-    mov eax, [chip8_I]
-    movzx edx, byte [rdi + rbx]
-    add eax, edx
-    mov ecx, 0
-    cmp eax, 0x1000
-    jb .fx1e_nocarry
-    mov ecx, 1
-.fx1e_nocarry:
-    mov [chip8_I], eax
-    mov [rdi + 15], cl
-    jmp .cycle_done
-.op_Fx29:
-    movzx eax, byte [rdi + rbx]
-    imul eax, eax, 5
-    add eax, CHIP8_FONT_BASE
-    mov [chip8_I], eax
-    jmp .cycle_done
-.op_Fx33:
-    movzx eax, byte [rdi + rbx]
-    xor edx, edx
-    mov ecx, 100
-    div ecx
-    mov r8d, edx                    ; remainder 0-99
-    mov r9b, al                     ; hundreds digit
-    xor edx, edx
-    mov eax, r8d
-    mov ecx, 10
-    div ecx                         ; eax=tens digit, edx=ones digit
-    mov r10d, [chip8_I]
-    mov [rsi + r10], r9b
-    mov [rsi + r10 + 1], al
-    mov [rsi + r10 + 2], dl
-    jmp .cycle_done
-.op_Fx55:
-    mov r10d, [chip8_I]
-    xor ecx, ecx
-.fx55_loop:
-    cmp ecx, ebx
-    jg .fx55_done
-    mov al, [rdi + rcx]
-    mov edx, r10d
-    add edx, ecx
-    mov [rsi + rdx], al
-    inc ecx
-    jmp .fx55_loop
-.fx55_done:
-    cmp dword [quirk_fx55_increment_i], 0
-    je .cycle_done
-    lea eax, [r10d + ebx + 1]
-    mov [chip8_I], eax
-    jmp .cycle_done
-.op_Fx65:
-    mov r10d, [chip8_I]
-    xor ecx, ecx
-.fx65_loop:
-    cmp ecx, ebx
-    jg .fx65_done
-    mov edx, r10d
-    add edx, ecx
-    mov al, [rsi + rdx]
-    mov [rdi + rcx], al
-    inc ecx
-    jmp .fx65_loop
-.fx65_done:
-    cmp dword [quirk_fx55_increment_i], 0
-    je .cycle_done
-    lea eax, [r10d + ebx + 1]
-    mov [chip8_I], eax
-    jmp .cycle_done
+    cmp     NN, 0x07
+    je      .op_Fx07
+    cmp     NN, 0x0A
+    je      .op_Fx0A
+    cmp     NN, 0x15
+    je      .op_Fx15
+    cmp     NN, 0x18
+    je      .op_Fx18
+    cmp     NN, 0x1E
+    je      .op_Fx1E
+    cmp     NN, 0x29
+    je      .op_Fx29
+    cmp     NN, 0x33
+    je      .op_Fx33
+    cmp     NN, 0x55
+    je      .op_Fx55
+    cmp     NN, 0x65
+    je      .op_Fx65
+    jmp     .cycle_done
 
+.op_Fx07:                               ; VX = delay timer
+    mov     eax, [chip8_delay]
+    mov     [V + X], al
+    jmp     .cycle_done
+
+.op_Fx0A:                               ; wait for a keypress, store it in VX
+    lea     rdx, [rel chip8_keys]
+    xor     eax, eax
+.scan_keys:
+    cmp     byte [rdx + rax], 0
+    jne     .key_found
+    inc     eax
+    cmp     eax, 16
+    jb      .scan_keys
+    sub     dword [chip8_pc], 2         ; nothing pressed: run this opcode again
+    jmp     .cycle_done
+.key_found:
+    mov     [V + X], al
+    jmp     .cycle_done
+
+.op_Fx15:                               ; delay timer = VX
+    movzx   eax, byte [V + X]
+    mov     [chip8_delay], eax
+    jmp     .cycle_done
+
+.op_Fx18:                               ; sound timer = VX
+    movzx   eax, byte [V + X]
+    mov     [chip8_sound], eax
+    jmp     .cycle_done
+
+.op_Fx1E:                               ; I += VX, VF = 1 if I leaves 12-bit range
+    movzx   eax, byte [V + X]
+    add     eax, [chip8_I]
+    xor     edx, edx
+    cmp     eax, 0x1000
+    setae   dl
+    mov     [chip8_I], eax
+    mov     [V + VF], dl
+    jmp     .cycle_done
+
+.op_Fx29:                               ; I = address of font glyph for VX
+    movzx   eax, byte [V + X]
+    lea     eax, [rax + rax*4 + CHIP8_FONT_BASE]    ; glyphs are 5 bytes each
+    mov     [chip8_I], eax
+    jmp     .cycle_done
+
+.op_Fx33:                               ; BCD of VX -> [I], [I+1], [I+2]
+    movzx   eax, byte [V + X]
+    mov     r8d, [chip8_I]
+    mov     ecx, 10
+    xor     edx, edx
+    div     ecx                         ; eax = VX / 10, edx = ones
+    mov     [RAM + r8 + 2], dl
+    xor     edx, edx
+    div     ecx                         ; eax = hundreds, edx = tens
+    mov     [RAM + r8 + 1], dl
+    mov     [RAM + r8], al
+    jmp     .cycle_done
+
+.op_Fx55:                               ; store V0..VX at [I]
+    mov     r8d, [chip8_I]
+    lea     r9, [RAM + r8]
+    xor     ecx, ecx
+.store_regs:
+    mov     al, [V + rcx]
+    mov     [r9 + rcx], al
+    inc     ecx
+    cmp     rcx, X
+    jbe     .store_regs
+    jmp     .fx_bump_i
+
+.op_Fx65:                               ; load V0..VX from [I]
+    mov     r8d, [chip8_I]
+    lea     r9, [RAM + r8]
+    xor     ecx, ecx
+.load_regs:
+    mov     al, [r9 + rcx]
+    mov     [V + rcx], al
+    inc     ecx
+    cmp     rcx, X
+    jbe     .load_regs
+
+.fx_bump_i:                             ; COSMAC quirk: i ends up past the block
+    cmp     dword [quirk_fx55_increment_i], 0
+    je      .cycle_done
+    lea     eax, [r8 + X + 1]
+    mov     [chip8_I], eax
+    jmp     .cycle_done
+
+; --- common exits -----------------------------------------------------------
+.skip_next:
+    add     dword [chip8_pc], 2
 .cycle_done:
-    pop r15
-    pop r14
-    pop r13
-    pop r12
-    pop rsi
-    pop rdi
-    pop rbp
-    pop rbx
+    pop     r15
+    pop     r14
+    pop     r13
+    pop     r12
+    pop     rsi
+    pop     rdi
+    pop     rbp
+    pop     rbx
     ret
+
+
+; jump tables for chip8_cycle. 
+; entries are 32-bit offsets from the start of
+; the table, which keeps them position-independent.
+align 4
+chip8_op_table:
+    dd chip8_cycle.op_0 - chip8_op_table
+    dd chip8_cycle.op_1 - chip8_op_table
+    dd chip8_cycle.op_2 - chip8_op_table
+    dd chip8_cycle.op_3 - chip8_op_table
+    dd chip8_cycle.op_4 - chip8_op_table
+    dd chip8_cycle.op_5 - chip8_op_table
+    dd chip8_cycle.op_6 - chip8_op_table
+    dd chip8_cycle.op_7 - chip8_op_table
+    dd chip8_cycle.op_8 - chip8_op_table
+    dd chip8_cycle.op_9 - chip8_op_table
+    dd chip8_cycle.op_A - chip8_op_table
+    dd chip8_cycle.op_B - chip8_op_table
+    dd chip8_cycle.op_C - chip8_op_table
+    dd chip8_cycle.op_D - chip8_op_table
+    dd chip8_cycle.op_E - chip8_op_table
+    dd chip8_cycle.op_F - chip8_op_table
+
+chip8_alu_table:
+    dd chip8_cycle.op_8xy0 - chip8_alu_table
+    dd chip8_cycle.op_8xy1 - chip8_alu_table
+    dd chip8_cycle.op_8xy2 - chip8_alu_table
+    dd chip8_cycle.op_8xy3 - chip8_alu_table
+    dd chip8_cycle.op_8xy4 - chip8_alu_table
+    dd chip8_cycle.op_8xy5 - chip8_alu_table
+    dd chip8_cycle.op_8xy6 - chip8_alu_table
+    dd chip8_cycle.op_8xy7 - chip8_alu_table
+    times 6 dd chip8_cycle.cycle_done - chip8_alu_table     ; 8..D: undefined
+    dd chip8_cycle.op_8xyE - chip8_alu_table
+    dd chip8_cycle.cycle_done - chip8_alu_table             ; F: undefined
