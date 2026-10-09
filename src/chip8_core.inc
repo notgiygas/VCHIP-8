@@ -51,7 +51,7 @@ chip8_draw_flag:        resb 1      ; set whenever the framebuffer changes
 chip8_rng_state:        resd 1
 chip8_last_opcode:      resd 1      ; for the debug overlay
 
-; Quirks. All default to 0 (modern behaviour), 1 selects the COSMAC VIP one.
+; quirks. All default to 0 (modern behaviour), 1 selects the COSMAC VIP one.
 quirk_shift_vy:         resd 1      ; 8XY6/8XYE shift VY into VX
 quirk_bnnn_vx:          resd 1      ; BNNN jumps to NNN + VX instead of NNN + V0
 quirk_fx55_increment_i: resd 1      ; FX55/FX65 leave I += X + 1
